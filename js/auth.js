@@ -1,7 +1,4 @@
 // js/auth.js
-// Sign-in queries: orgs/{org}/accounts where account_name+account_pass+role match
-// (unchanged — app already writes to this path via beacon_service.dart ping())
-
 let currentUser = null; // { name, org, role, docId }
 
 function togglePw(id, btn) {
@@ -32,7 +29,7 @@ async function handleSignIn() {
   console.log('[Auth] sign-in attempt — org:', org, 'user:', user, 'role:', role);
 
   try {
-    // Query orgs/{org}/accounts for matching credentials + role
+    // Query org's accounts for matching credentials + role
     const snap = await db
       .collection('orgs').doc(org)
       .collection('accounts')
@@ -44,6 +41,7 @@ async function handleSignIn() {
     console.log('[Auth] query returned', snap.size, 'doc(s)');
 
     if (snap.empty) {
+      // Try without role match to give a more specific error
       const snapNoRole = await db
         .collection('orgs').doc(org)
         .collection('accounts')
@@ -51,9 +49,11 @@ async function handleSignIn() {
         .where('account_pass', '==', pass)
         .get();
 
-      errEl.textContent = snapNoRole.empty
-        ? 'Invalid organization, username, or password.'
-        : 'Credentials correct but role does not match. Check your role selection.';
+      if (snapNoRole.empty) {
+        errEl.textContent = 'Invalid organization, username, or password.';
+      } else {
+        errEl.textContent = 'Credentials correct but role does not match. Check your role selection.';
+      }
       errEl.classList.remove('hidden');
       console.log('[Auth] sign-in failed');
       return;
@@ -73,7 +73,7 @@ async function handleSignIn() {
       .collection('accounts').doc(docSnap.id)
       .update({ last_seen: firebase.firestore.FieldValue.serverTimestamp() });
 
-    // Mirror to users/ for audit page device status
+    // Mirror to users/ collection (for audit + roster)
     await db.collection('users').doc(docSnap.id).set({
       account_name: currentUser.name,
       account_role: currentUser.role,
@@ -114,12 +114,14 @@ function signOut() {
   document.getElementById('app').classList.add('hidden');
   document.getElementById('auth-overlay').classList.remove('hidden');
   document.getElementById('page-container').innerHTML = '';
+  // Clear inputs
   ['si-org','si-user','si-pass'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
 }
 
+// Watch kill_switch and show badge if anything is killed
 function _watchKillBadge() {
   db.collection('config').doc('kill_switch').onSnapshot(snap => {
     const data   = snap.exists ? snap.data() : {};
@@ -130,6 +132,7 @@ function _watchKillBadge() {
     if (badge) {
       badge.classList.toggle('hidden', active && !hasKilledDevices && !hasKilledAccounts);
     }
+    console.log('[Auth] kill badge update — active:', active, 'killedDevices:', hasKilledDevices, 'killedAccounts:', hasKilledAccounts);
   }, e => console.error('[Auth] kill badge watch error:', e));
 }
 
@@ -148,12 +151,13 @@ function initAuth() {
   document.getElementById('auth-overlay').classList.remove('hidden');
 }
 
-// Org-scoped helpers
+// ── Org-scoped Firestore query helpers ─────────────────────
 function orgQuery(collection) {
   if (!currentUser?.org) return db.collection(collection);
   return db.collection(collection).where('org_id', '==', currentUser.org);
 }
 
+// For nested collections (orgs/<org>/accounts)
 function orgAccountsRef() {
   return db.collection('orgs').doc(currentUser.org).collection('accounts');
 }
