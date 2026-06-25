@@ -24,61 +24,37 @@ async function handleSignIn() {
 
   const btn = document.getElementById('si-btn');
   btn.disabled = true;
-  btn.textContent = 'Verifying…';
+  btn.textContent = 'Signing in…';
 
   console.log('[Auth] sign-in attempt — org:', org, 'user:', user, 'role:', role);
 
   try {
-    // Query org's accounts for matching credentials + role
-    const snap = await db
-      .collection('orgs').doc(org)
-      .collection('accounts')
-      .where('account_name', '==', user)
-      .where('account_pass', '==', pass)
-      .where('role',         '==', role)
-      .get();
+    const now = firebase.firestore.FieldValue.serverTimestamp();
 
-    console.log('[Auth] query returned', snap.size, 'doc(s)');
-
-    if (snap.empty) {
-      // Try without role match to give a more specific error
-      const snapNoRole = await db
-        .collection('orgs').doc(org)
-        .collection('accounts')
-        .where('account_name', '==', user)
-        .where('account_pass', '==', pass)
-        .get();
-
-      if (snapNoRole.empty) {
-        errEl.textContent = 'Invalid organization, username, or password.';
-      } else {
-        errEl.textContent = 'Credentials correct but role does not match. Check your role selection.';
-      }
-      errEl.classList.remove('hidden');
-      console.log('[Auth] sign-in failed');
-      return;
-    }
-
-    const docSnap = snap.docs[0];
-    const data    = docSnap.data();
-    currentUser   = {
-      name:  data.account_name,
-      org:   org,
-      role:  data.role || role,
-      docId: docSnap.id,
-    };
-
-    // Update last_seen
+    // Register/update web account under orgs/{org}/accounts/{user}
     await db.collection('orgs').doc(org)
-      .collection('accounts').doc(docSnap.id)
-      .update({ last_seen: firebase.firestore.FieldValue.serverTimestamp() });
+      .collection('accounts').doc(user)
+      .set({
+        account_name: user,
+        account_pass: pass,
+        role:         role,
+        org_id:       org,
+        device_id:    'web-dashboard',
+        device_brand: 'web',
+        device_model: 'dashboard',
+        last_seen:    now,
+      }, { merge: true });
 
-    // Mirror to users/ collection (for audit + roster)
-    await db.collection('users').doc(docSnap.id).set({
-      account_name: currentUser.name,
-      account_role: currentUser.role,
+    console.log('[Auth] account registered/updated at orgs/' + org + '/accounts/' + user);
+
+    currentUser = { name: user, org: org, role: role, docId: user };
+
+    // Mirror to users/ for audit + roster
+    await db.collection('users').doc(user).set({
+      account_name: user,
+      account_role: role,
       org_id:       org,
-      last_seen:    firebase.firestore.FieldValue.serverTimestamp(),
+      last_seen:    now,
       device_brand: 'web',
       device_model: 'dashboard',
     }, { merge: true });
@@ -114,14 +90,12 @@ function signOut() {
   document.getElementById('app').classList.add('hidden');
   document.getElementById('auth-overlay').classList.remove('hidden');
   document.getElementById('page-container').innerHTML = '';
-  // Clear inputs
   ['si-org','si-user','si-pass'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
 }
 
-// Watch kill_switch and show badge if anything is killed
 function _watchKillBadge() {
   db.collection('config').doc('kill_switch').onSnapshot(snap => {
     const data   = snap.exists ? snap.data() : {};
@@ -132,7 +106,7 @@ function _watchKillBadge() {
     if (badge) {
       badge.classList.toggle('hidden', active && !hasKilledDevices && !hasKilledAccounts);
     }
-    console.log('[Auth] kill badge update — active:', active, 'killedDevices:', hasKilledDevices, 'killedAccounts:', hasKilledAccounts);
+    console.log('[Auth] kill badge update — active:', active);
   }, e => console.error('[Auth] kill badge watch error:', e));
 }
 
@@ -151,13 +125,11 @@ function initAuth() {
   document.getElementById('auth-overlay').classList.remove('hidden');
 }
 
-// ── Org-scoped Firestore query helpers ─────────────────────
 function orgQuery(collection) {
   if (!currentUser?.org) return db.collection(collection);
   return db.collection(collection).where('org_id', '==', currentUser.org);
 }
 
-// For nested collections (orgs/<org>/accounts)
 function orgAccountsRef() {
   return db.collection('orgs').doc(currentUser.org).collection('accounts');
 }
