@@ -1,6 +1,6 @@
 // js/pages/attendance.js
-// Path: orgs/{org}/accounts/{account}/attendance/{date}/{sessionLabel}/{studentName}
-// Student doc fields: name, roll_no, status, group_name, synced_at
+// Reads from: orgs/{org}/accounts/{account}/attendance_flat/{doc}
+// Schema: { account, date, session, student_name, roll_no, status, group_name, synced_at }
 
 function attendance(container) {
   if (!currentUser?.org) {
@@ -12,7 +12,7 @@ function attendance(container) {
     <div class="page">
       <div class="page-header">
         <div><div class="page-title">Attendance Records</div>
-          <div class="page-sub">All accounts under <strong style="color:var(--text-p)">${currentUser.org}</strong></div></div>
+          <div class="page-sub">Live from <strong style="color:var(--text-p)">${currentUser.org}</strong> · all accounts</div></div>
       </div>
       <div class="att-controls">
         <select id="att-account-sel" onchange="attApplyFilter()"><option value="">All Accounts</option></select>
@@ -39,109 +39,89 @@ function attendance(container) {
     </div>`;
 
   window._attAllRows = [];
+  window._attUnsubs = window._attUnsubs || [];
+  window._attUnsubs.forEach(u => { try { u(); } catch(_) {} });
+  window._attUnsubs = [];
 
-  // Step 1: get all accounts
-  db.collection('orgs').doc(currentUser.org)
+  // Listen to all accounts, then fan out to their attendance_flat subcollections
+  const unsubAccounts = db.collection('orgs').doc(currentUser.org)
     .collection('accounts')
-    .get()
-    .then(accountsSnap => {
-      const accountNames = accountsSnap.docs.map(d => d.id);
-
-      // Populate account filter
+    .onSnapshot(snap => {
       const accountSel = document.getElementById('att-account-sel');
-      if (accountSel) {
-        accountSel.innerHTML = '<option value="">All Accounts</option>' +
-          accountNames.map(n => `<option value="${n}">${n}</option>`).join('');
-      }
+      if (!accountSel) return;
+      const prevAccount = accountSel.value;
+      const accountNames = snap.docs.map(d => d.id);
+      accountSel.innerHTML = '<option value="">All Accounts</option>' +
+        accountNames.map(n => `<option value="${n}">${n}</option>`).join('');
+      accountSel.value = prevAccount;
 
-      _attLoadAll(currentUser.org, accountNames);
-    })
-    .catch(e => console.error('[attendance] accounts fetch error', e));
-}
+      // Cancel old per-account listeners
+      window._attUnsubs.forEach(u => { try { u(); } catch(_) {} });
+      window._attUnsubs = [];
 
-async function _attLoadAll(orgId, accountNames) {
-  const projectId = firebaseConfig.projectId;
-  const allRows   = [];
+      const rowsByAccount = {};
 
-  for (const acctName of accountNames) {
-    // Get date-level docs
-    let dateDocs;
-    try {
-      const snap = await db.collection('orgs').doc(orgId)
-        .collection('accounts').doc(acctName)
-        .collection('attendance')
-        .get();
-      dateDocs = snap.docs;
-    } catch(e) {
-      console.error('[attendance] date fetch error', acctName, e);
-      continue;
-    }
+      snap.docs.forEach(acctDoc => {
+        const acctName = acctDoc.id;
+        rowsByAccount[acctName] = [];
 
-    for (const dateDoc of dateDocs) {
-      const date = dateDoc.id;
-
-      // Use REST to list session subcollections under this date doc
-      let sessionIds;
-      try {
-        const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/orgs/${orgId}/accounts/${acctName}/attendance/${date}:listCollectionIds`;
-        const resp = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({})
-        });
-        const data = await resp.json();
-        sessionIds = data.collectionIds || [];
-      } catch(e) {
-        console.error('[attendance] listCollectionIds error', acctName, date, e);
-        continue;
-      }
-
-      for (const sessionLabel of sessionIds) {
-        // Get student docs under this session
-        try {
-          const snap = await db.collection('orgs').doc(orgId)
-            .collection('accounts').doc(acctName)
-            .collection('attendance').doc(date)
-            .collection(sessionLabel)
-            .get();
-
-          snap.docs.forEach(studDoc => {
-            const f = studDoc.data();
-            allRows.push({
-              account:     acctName,
-              date,
-              session:     sessionLabel,
-              studentName: f.name || studDoc.id,
-              rollNo:      f.roll_no    || '—',
-              status:      f.status     || '—',
-              groupName:   f.group_name || '—',
+        const unsub = db.collection('orgs').doc(currentUser.org)
+          .collection('accounts').doc(acctName)
+          .collection('attendance_flat')
+          .onSnapshot(flatSnap => {
+            rowsByAccount[acctName] = flatSnap.docs.map(d => {
+              const f = d.data();
+              return {
+                account:     acctName,
+                date:        f.date        || '—',
+                session:     f.session     || '—',
+                studentName: f.student_name || '—',
+                rollNo:      f.roll_no     || '—',
+                status:      f.status      || '—',
+                groupName:   f.group_name  || '—',
+              };
             });
-          });
-        } catch(e) {
-          console.error('[attendance] student fetch error', acctName, date, sessionLabel, e);
-        }
-      }
-    }
-  }
 
-  window._attAllRows = allRows;
-  _attPopulateFilters(allRows);
-  attApplyFilter();
+            const all = Object.values(rowsByAccount).flat();
+            all.sort((a, b) => b.date.localeCompare(a.date) || a.studentName.localeCompare(b.studentName));
+            window._attAllRows = all;
+
+            const countEl = document.getElementById('att-count');
+            if (countEl) countEl.textContent = all.length + ' records';
+
+            _attPopulateFilters(all);
+            attApplyFilter();
+          }, e => console.error('[attendance] attendance_flat error for', acctName, e));
+
+        window._attUnsubs.push(unsub);
+        registerUnsub(unsub);
+      });
+    }, e => console.error('[attendance] accounts error', e));
+
+  registerUnsub(unsubAccounts);
 }
 
 function _attPopulateFilters(rows) {
   const dates    = [...new Set(rows.map(r => r.date))].sort().reverse();
   const sessions = [...new Set(rows.map(r => r.session))].sort();
-  const groups   = [...new Set(rows.map(r => r.groupName).filter(g => g !== '—'))].sort();
+  const groups   = [...new Set(rows.map(r => r.groupName))].sort();
 
   const dateSel    = document.getElementById('att-date-sel');
   const sessionSel = document.getElementById('att-session-sel');
   const groupSel   = document.getElementById('att-group-sel');
   if (!dateSel) return;
 
+  const prevDate    = dateSel.value;
+  const prevSession = sessionSel.value;
+  const prevGroup   = groupSel.value;
+
   dateSel.innerHTML    = '<option value="">All Dates</option>'    + dates.map(d => `<option value="${d}">${d}</option>`).join('');
   sessionSel.innerHTML = '<option value="">All Sessions</option>' + sessions.map(s => `<option value="${s}">${s}</option>`).join('');
   groupSel.innerHTML   = '<option value="">All Groups</option>'   + groups.map(g => `<option value="${g}">${g}</option>`).join('');
+
+  dateSel.value    = prevDate;
+  sessionSel.value = prevSession;
+  groupSel.value   = prevGroup;
 }
 
 function attApplyFilter() {
@@ -170,7 +150,6 @@ function attApplyFilter() {
   setEl('att-absent',  absent);
   setEl('att-rate',    rate);
   setEl('att-total',   total);
-  setEl('att-count',   total + ' records');
 
   const body = document.getElementById('att-body');
   if (!body) return;
