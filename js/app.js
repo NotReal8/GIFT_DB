@@ -1,9 +1,9 @@
 // js/app.js
-const pages = { home, audit, attendance, teacherRoster, studentRoster, killswitch, profile, settings };
+const pages = { home, audit, attendance, teacherRoster, studentRoster, killswitch, pendingRequests, profile, settings };
 const pageMap = {
   'home': home, 'audit': audit, 'attendance': attendance,
   'teacher-roster': teacherRoster, 'student-roster': studentRoster,
-  'killswitch': killswitch, 'profile': profile, 'settings': settings
+  'killswitch': killswitch, 'pending-requests': pendingRequests, 'profile': profile, 'settings': settings
 };
 
 let activeUnsubs = []; // Firestore listeners to tear down on nav
