@@ -1,7 +1,6 @@
 // js/pages/profile.js
 function profile(container) {
   if (!currentUser) { container.innerHTML = '<div class="page"><p>Not signed in.</p></div>'; return; }
-
   container.innerHTML = `
     <div class="page">
       <div class="page-header"><div class="page-title">Profile</div></div>
@@ -21,17 +20,13 @@ function profile(container) {
         <div id="pf-feedback" class="profile-feedback hidden"></div>
       </div>
     </div>`;
-
   console.log('[profile] loaded for', currentUser.docId);
 }
-
 async function profileSave() {
   const name = document.getElementById('pf-name')?.value.trim();
   const role = document.getElementById('pf-role')?.value;
   const fb   = document.getElementById('pf-feedback');
-
   if (!name) { _pfFeedback('Name is required.', true); return; }
-
   try {
     // Update users/ doc
     await db.collection('users').doc(currentUser.docId).set({
@@ -40,8 +35,7 @@ async function profileSave() {
       account_role: role,
       last_seen:    firebase.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
-
-    // Update org accounts — path must match Firestore rules: orgs/{org}/accounts/{doc}
+    // Update org accounts
     await db.collection('orgs').doc(currentUser.org)
       .collection('accounts').doc(currentUser.docId).set({
         account_name: name,
@@ -49,13 +43,11 @@ async function profileSave() {
         role,
         last_seen:    firebase.firestore.FieldValue.serverTimestamp(),
       }, { merge: true });
-
     // Update session
     currentUser.name = name;
     currentUser.role = role;
     sessionStorage.setItem('gift_user', JSON.stringify(currentUser));
     document.getElementById('topbar-user').textContent = name;
-
     console.log('[profile] saved', { name, role });
     _pfFeedback('Saved ✓', false);
   } catch (e) {
@@ -63,7 +55,6 @@ async function profileSave() {
     _pfFeedback('Error: ' + e.message, true);
   }
 }
-
 function _pfFeedback(msg, isErr) {
   const el = document.getElementById('pf-feedback');
   if (!el) return;
